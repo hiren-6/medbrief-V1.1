@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, User, Phone, Mail, Calendar, Clock, FileText, AlertTriangle, CheckCircle, Check, LogOut, Menu, Search, Filter, Download, ChevronDown, ChevronUp, Heart, Activity, Scale, Ruler, Wine, Dumbbell, Lock, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, User, Phone, Mail, Calendar, Clock, FileText, AlertTriangle, CheckCircle, Check, LogOut, Menu, Search, Filter, Download, ChevronDown, ChevronUp, Heart, Activity, Scale, Ruler, Wine, Dumbbell, Lock, X, Sparkles, Brain, Pill, Loader } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { AppointmentStatusService } from '../services/AppointmentStatusService';
 import { AppointmentCacheService } from '../services/AppointmentCacheService';
@@ -72,6 +72,25 @@ interface PatientDocument {
   ai_summary?: string;
 }
 
+interface ClinicalSummary {
+  id: string;
+  consultation_id: string;
+  patient_id: string;
+  summary_json: {
+    chief_complaint: string;
+    history_of_present_illness: string;
+    differential_diagnoses: string[];
+    recommended_tests: string[];
+    urgency_level: 'routine' | 'urgent' | 'emergency';
+  };
+  model_version: string;
+  prompt_version: string;
+  processing_status: string;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // 2. Add a helper to get the public URL for a file
 const getPublicFileUrl = (filePath: string) => {
   if (!filePath) return '';
@@ -91,6 +110,8 @@ const DoctorViewPage: React.FC = () => {
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [userName, setUserName] = useState('');
+  const [clinicalSummary, setClinicalSummary] = useState<ClinicalSummary | null>(null);
+  const [aiProcessingStatus, setAiProcessingStatus] = useState<string>('pending');
   const [expandedSections, setExpandedSections] = useState({
     scheduled: true,
     checked: false, // Collapsed by default
@@ -323,6 +344,24 @@ const DoctorViewPage: React.FC = () => {
           setSelectedDocument(null);
           setExpandedCategories({});
         }
+      }
+
+      // Fetch clinical summary
+      if (appointment.consultation_id) {
+        const { data: summaryData, error: summaryError } = await supabase
+          .from('clinical_summaries')
+          .select('*')
+          .eq('consultation_id', appointment.consultation_id)
+          .single();
+
+        if (summaryError && summaryError.code !== 'PGRST116') { // PGRST116 is "not found"
+          console.error('Error fetching clinical summary:', summaryError);
+        } else {
+          setClinicalSummary(summaryData);
+        }
+
+        // Get AI processing status from appointment
+        setAiProcessingStatus(appointment.ai_processing_status || 'pending');
       }
     } catch (error) {
       console.error('Error fetching patient details:', error);
@@ -627,6 +666,36 @@ const DoctorViewPage: React.FC = () => {
       if (bIndex !== -1) return 1;
       return a.localeCompare(b);
     });
+  };
+
+  // Helper function to get urgency level color
+  const getUrgencyColor = (urgency: string) => {
+    switch (urgency) {
+      case 'emergency':
+        return 'bg-red-100 text-red-700 border-red-200';
+      case 'urgent':
+        return 'bg-orange-100 text-orange-700 border-orange-200';
+      case 'routine':
+        return 'bg-green-100 text-green-700 border-green-200';
+      default:
+        return 'bg-gray-100 text-gray-700 border-gray-200';
+    }
+  };
+
+  // Helper function to get AI processing status display
+  const getAiProcessingStatusDisplay = (status: string) => {
+    switch (status) {
+      case 'pending':
+        return { text: 'AI Analysis Pending', icon: Clock, color: 'text-gray-500' };
+      case 'triggered':
+        return { text: 'AI Analysis in Progress', icon: Loader, color: 'text-blue-500 animate-spin' };
+      case 'completed':
+        return { text: 'AI Analysis Complete', icon: CheckCircle, color: 'text-green-500' };
+      case 'failed':
+        return { text: 'AI Analysis Failed', icon: AlertTriangle, color: 'text-red-500' };
+      default:
+        return { text: 'Processing Status Unknown', icon: AlertTriangle, color: 'text-gray-500' };
+    }
   };
 
   // Use useEffect to fetch appointments when selectedDate changes
@@ -1410,15 +1479,120 @@ const DoctorViewPage: React.FC = () => {
             )}
 
             {activeTab === 'tab4' && (
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                <h3 className="text-xl font-semibold text-gray-800 mb-6 flex items-center">
-                  <Activity className="h-5 w-5 mr-3 text-purple-600" />
-                  AI Summary
-                </h3>
-                <div className="text-center py-12">
-                  <Activity className="h-16 w-16 mx-auto mb-4 text-gray-300" />
-                  <h4 className="text-lg font-semibold text-gray-600 mb-2">No Notes Yet</h4>
-                  <p className="text-gray-500">Add your clinical notes and observations here.</p>
+              <div className="space-y-6">
+                {/* AI Processing Status */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                  <h3 className="text-xl font-semibold text-gray-800 mb-6 flex items-center">
+                    <Sparkles className="h-5 w-5 mr-3 text-purple-600" />
+                    AI Clinical Summary
+                  </h3>
+                  
+                  {/* Processing Status */}
+                  {(() => {
+                    const statusDisplay = getAiProcessingStatusDisplay(aiProcessingStatus);
+                    const StatusIcon = statusDisplay.icon;
+                    
+                    return (
+                      <div className="mb-6 p-4 bg-gradient-to-r from-purple-50 to-blue-50 rounded-xl border border-purple-200">
+                        <div className="flex items-center space-x-3">
+                          <StatusIcon className={`h-5 w-5 ${statusDisplay.color}`} />
+                          <span className="font-medium text-gray-800">{statusDisplay.text}</span>
+                        </div>
+                        {aiProcessingStatus === 'failed' && clinicalSummary?.error_message && (
+                          <p className="text-sm text-red-600 mt-2">
+                            Error: {clinicalSummary.error_message}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Clinical Summary Content */}
+                  {clinicalSummary && clinicalSummary.summary_json ? (
+                    <div className="space-y-4">
+                      {/* Chief Complaint */}
+                      <div className="bg-gradient-to-r from-red-50 to-orange-50 rounded-xl p-4 border border-red-200">
+                        <h5 className="font-semibold text-gray-800 mb-2 flex items-center">
+                          <AlertTriangle className="h-4 w-4 mr-2 text-red-600" />
+                          Chief Complaint
+                        </h5>
+                        <p className="text-gray-700">{clinicalSummary.summary_json.chief_complaint}</p>
+                      </div>
+
+                      {/* History of Present Illness */}
+                      <div className="bg-gradient-to-r from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-200">
+                        <h5 className="font-semibold text-gray-800 mb-2 flex items-center">
+                          <Activity className="h-4 w-4 mr-2 text-blue-600" />
+                          History of Present Illness
+                        </h5>
+                        <p className="text-gray-700">{clinicalSummary.summary_json.history_of_present_illness}</p>
+                      </div>
+
+                      {/* Differential Diagnoses */}
+                      {clinicalSummary.summary_json.differential_diagnoses.length > 0 && (
+                        <div className="bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl p-4 border border-yellow-200">
+                          <h5 className="font-semibold text-gray-800 mb-2 flex items-center">
+                            <Brain className="h-4 w-4 mr-2 text-yellow-600" />
+                            Differential Diagnoses
+                          </h5>
+                          <ul className="space-y-1">
+                            {clinicalSummary.summary_json.differential_diagnoses.map((diagnosis: string, index: number) => (
+                              <li key={index} className="flex items-start space-x-2">
+                                <span className="text-yellow-600 font-medium text-sm">•</span>
+                                <span className="text-gray-700 text-sm">{diagnosis}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Recommended Tests */}
+                      {clinicalSummary.summary_json.recommended_tests.length > 0 && (
+                        <div className="bg-gradient-to-r from-green-50 to-teal-50 rounded-xl p-4 border border-green-200">
+                          <h5 className="font-semibold text-gray-800 mb-2 flex items-center">
+                            <Pill className="h-4 w-4 mr-2 text-green-600" />
+                            Recommended Tests
+                          </h5>
+                          <ul className="space-y-1">
+                            {clinicalSummary.summary_json.recommended_tests.map((test: string, index: number) => (
+                              <li key={index} className="flex items-start space-x-2">
+                                <span className="text-green-600 font-medium text-sm">•</span>
+                                <span className="text-gray-700 text-sm">{test}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Urgency Level */}
+                      <div className={`rounded-xl p-4 border ${getUrgencyColor(clinicalSummary.summary_json.urgency_level)}`}>
+                        <h5 className="font-semibold mb-2 flex items-center">
+                          <AlertTriangle className="h-4 w-4 mr-2" />
+                          Urgency Level
+                        </h5>
+                        <p className="text-sm font-medium capitalize">
+                          {clinicalSummary.summary_json.urgency_level}
+                        </p>
+                      </div>
+
+                      {/* AI Model Info */}
+                      <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600">
+                        <p>Generated by {clinicalSummary.model_version} • {new Date(clinicalSummary.created_at).toLocaleString()}</p>
+                      </div>
+                    </div>
+                  ) : aiProcessingStatus === 'completed' ? (
+                    <div className="text-center py-12">
+                      <Sparkles className="h-16 w-16 mx-auto mb-4 text-gray-300" />
+                      <h4 className="text-lg font-semibold text-gray-600 mb-2">No AI Summary Available</h4>
+                      <p className="text-gray-500">AI analysis completed but no summary was generated.</p>
+                    </div>
+                  ) : (
+                    <div className="text-center py-12">
+                      <Loader className="h-16 w-16 mx-auto mb-4 text-blue-300 animate-spin" />
+                      <h4 className="text-lg font-semibold text-gray-600 mb-2">AI Analysis in Progress</h4>
+                      <p className="text-gray-500">The AI is analyzing patient data and will generate a clinical summary shortly.</p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

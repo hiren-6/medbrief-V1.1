@@ -283,7 +283,7 @@ const PatientViewPage: React.FC = () => {
   };
 
   // Add this function to handle file uploads
-  const uploadFilesToSupabase = async (files: File[], consultationId: string) => {
+  const uploadFilesToSupabase = async (files: File[], consultationId: string, appointmentId?: string) => {
     const uploadedFiles = [];
     
     for (const file of files) {
@@ -308,7 +308,7 @@ const PatientViewPage: React.FC = () => {
           .from('patient-documents')
           .getPublicUrl(filePath);
         
-        // Insert file record into database
+        // Insert file record into database with appointment_id (correct approach)
         const { error: dbError } = await supabase
           .from('patient_files')
           .insert({
@@ -319,7 +319,9 @@ const PatientViewPage: React.FC = () => {
             file_path: filePath,
             file_size: file.size,
             file_type: file.type,
-            file_category: getFileCategory(file.name)
+            file_category: getFileCategory(file.name),
+            appointment_id: appointmentId, // Set appointment_id immediately
+            processed: false
           });
         
         if (dbError) {
@@ -357,13 +359,37 @@ const PatientViewPage: React.FC = () => {
     return 'medical_document';
   };
 
-  // Update your handleSubmit function
+  // Enhanced handleSubmit function with better error handling and validation
   const handleSubmit = async () => {
     setSubmitLoading(true);
     setSubmitError('');
     setSubmitSuccess(false);
     
     try {
+      // Validate required fields
+      if (!selectedDoctor) {
+        setSubmitError('Please select a doctor');
+        setSubmitLoading(false);
+        return;
+      }
+
+      if (!appointmentDate || !appointmentTime || !appointmentDatetime) {
+        setSubmitError('Please select an appointment time');
+        setSubmitLoading(false);
+        return;
+      }
+
+      if (!formData.chiefComplaint.trim()) {
+        setSubmitError('Please describe your main concern');
+        setSubmitLoading(false);
+        return;
+      }
+
+      console.log('🔄 Starting appointment creation process...');
+      console.log('Selected doctor:', selectedDoctor);
+      console.log('Appointment datetime:', appointmentDatetime);
+      console.log('Files to upload:', uploadedFiles.length);
+
       // Create a clean medical data object with only essential fields
       const medicalData = {
         chiefComplaint: formData.chiefComplaint,
@@ -376,6 +402,7 @@ const PatientViewPage: React.FC = () => {
         chronicConditions: formData.chronicConditions
       };
 
+      console.log('📝 Creating consultation...');
       // Insert into consultations table with only medical data
       const { data: consultationData, error: consultationError } = await supabase
         .from('consultations')
@@ -388,18 +415,17 @@ const PatientViewPage: React.FC = () => {
         .single();
 
       if (consultationError) {
+        console.error('❌ Consultation creation failed:', consultationError);
         setSubmitError('Failed to submit consultation: ' + consultationError.message);
         setSubmitLoading(false);
         return;
       }
 
-      // Upload files if any
-      if (uploadedFiles.length > 0) {
-        await uploadFilesToSupabase(uploadedFiles, consultationData.id);
-      }
+      console.log('✅ Consultation created successfully:', consultationData.id);
 
-      // Insert into appointments table
-      const { error: appointmentError } = await supabase
+      console.log('📅 Creating appointment FIRST...');
+      // Create appointment BEFORE uploading files (correct order)
+      const { data: appointmentData, error: appointmentError } = await supabase
         .from('appointments')
         .insert([{
           patient_id: patientId,
@@ -408,25 +434,73 @@ const PatientViewPage: React.FC = () => {
           appointment_time: appointmentTime,
           appointment_datetime: appointmentDatetime,
           consultation_id: consultationData.id,
-          status: 'scheduled'
-        }]);
+          status: 'scheduled',
+          ai_processing_status: 'pending'
+        }])
+        .select()
+        .single();
 
       if (appointmentError) {
+        console.error('❌ Appointment creation failed:', appointmentError);
         setSubmitError('Failed to create appointment: ' + appointmentError.message);
         setSubmitLoading(false);
         return;
       }
 
+      console.log('✅ Appointment created successfully:', appointmentData.id);
+
+      // NOW upload files with appointment_id (correct order)
+      if (uploadedFiles.length > 0) {
+        console.log('📁 Uploading files with appointment_id...');
+        try {
+          await uploadFilesToSupabase(uploadedFiles, consultationData.id, appointmentData.id);
+          console.log('✅ Files uploaded successfully with appointment link');
+        } catch (fileError) {
+          console.error('⚠️ File upload error (continuing anyway):', fileError);
+          // Don't fail the entire process if file upload fails
+        }
+      }
+
+      if (appointmentError) {
+        console.error('❌ Appointment creation failed:', appointmentError);
+        setSubmitError('Failed to create appointment: ' + appointmentError.message);
+        setSubmitLoading(false);
+        return;
+      }
+
+      console.log('✅ Appointment created successfully:', appointmentData.id);
+
+      // Verify appointment was created by fetching it
+      const { data: verifyAppointment, error: verifyError } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('id', appointmentData.id)
+        .single();
+
+      if (verifyError || !verifyAppointment) {
+        console.error('❌ Appointment verification failed:', verifyError);
+        setSubmitError('Appointment created but verification failed. Please check your appointments.');
+        setSubmitLoading(false);
+        return;
+      }
+
+      console.log('✅ Appointment verified successfully');
+
+      // Note: Files are now uploaded with appointment_id directly, so no linking needed
+      // AI processing will be triggered automatically by appointment INSERT trigger
+
       setSubmitSuccess(true);
       setIsSubmitted(true);
       setShowPopup(true);
       
+      // Show success message for longer
       setTimeout(() => {
         setShowPopup(false);
         navigate('/dashboard/patient');
-      }, 5000);
+      }, 3000);
       
     } catch (err: any) {
+      console.error('💥 Unexpected error in handleSubmit:', err);
       setSubmitError('Unexpected error: ' + err.message);
     }
     setSubmitLoading(false);

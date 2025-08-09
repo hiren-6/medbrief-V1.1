@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { useNavigate } from 'react-router-dom';
-import { User, LogOut, ChevronDown, ChevronUp, Plus, Lock, FileText, Download, Calendar, Phone, Mail, AlertCircle, Pill, Activity, Brain, Heart, Clock, Bell } from 'lucide-react';
+import { User, LogOut, ChevronDown, ChevronUp, Plus, Lock, FileText, Download, Calendar, Phone, Mail, AlertCircle, Pill, Activity, Brain, Heart, Clock, Bell, Sparkles, CheckCircle, AlertTriangle, Loader } from 'lucide-react';
 import { useScrollToTop } from '../hooks/useScrollToTop';
 import ProfileImage from '../components/ProfileImage';
 import NotificationDropdown from '../components/NotificationDropdown';
@@ -68,6 +68,25 @@ interface PatientFile {
   ai_summary?: string;
 }
 
+interface ClinicalSummary {
+  id: string;
+  consultation_id: string;
+  patient_id: string;
+  summary_json: {
+    chief_complaint: string;
+    history_of_present_illness: string;
+    differential_diagnoses: string[];
+    recommended_tests: string[];
+    urgency_level: 'routine' | 'urgent' | 'emergency';
+  };
+  model_version: string;
+  prompt_version: string;
+  processing_status: string;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 const PatientConsultationsPage: React.FC = () => {
   // Scroll to top on page load
   useScrollToTop();
@@ -83,6 +102,8 @@ const PatientConsultationsPage: React.FC = () => {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
+  const [clinicalSummaries, setClinicalSummaries] = useState<Record<string, ClinicalSummary>>({});
+  const [aiProcessingStatus, setAiProcessingStatus] = useState<Record<string, string>>({});
   const navigate = useNavigate();
 
   // Close dropdown on outside click
@@ -183,6 +204,32 @@ const PatientConsultationsPage: React.FC = () => {
         }
       }
       setAppointments(appointmentsMap);
+
+      // Fetch clinical summaries for each consultation
+      const summariesMap: Record<string, ClinicalSummary> = {};
+      const processingStatusMap: Record<string, string> = {};
+      
+      for (const consultation of consultationsWithDoctor) {
+        // Get clinical summary
+        const { data: summaryData } = await supabase
+          .from('clinical_summaries')
+          .select('*')
+          .eq('consultation_id', consultation.id)
+          .single();
+        
+        if (summaryData) {
+          summariesMap[consultation.id] = summaryData;
+        }
+
+        // Get AI processing status from appointments
+        const appointment = appointmentsMap[consultation.id];
+        if (appointment) {
+          processingStatusMap[consultation.id] = appointment.ai_processing_status || 'pending';
+        }
+      }
+      
+      setClinicalSummaries(summariesMap);
+      setAiProcessingStatus(processingStatusMap);
       
       // Sort consultations by appointment datetime (earliest first)
       const consultationsWithAppointments = consultationsWithDoctor.filter(consultation => 
@@ -251,6 +298,64 @@ const PatientConsultationsPage: React.FC = () => {
             if (payload.new && payload.new.read === false) {
               setNotifications((prev: any[]) => [payload.new, ...prev]);
             }
+          }
+        )
+        .subscribe();
+
+      // Subscribe to clinical summaries updates
+      const clinicalSummarySubscription = supabase
+        .channel(`clinical_summaries_${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'clinical_summaries',
+            filter: `patient_id=eq.${user.id}`
+          },
+          (payload) => {
+            const newSummary = payload.new as ClinicalSummary;
+            setClinicalSummaries(prev => ({
+              ...prev,
+              [newSummary.consultation_id]: newSummary
+            }));
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'clinical_summaries',
+            filter: `patient_id=eq.${user.id}`
+          },
+          (payload) => {
+            const updatedSummary = payload.new as ClinicalSummary;
+            setClinicalSummaries(prev => ({
+              ...prev,
+              [updatedSummary.consultation_id]: updatedSummary
+            }));
+          }
+        )
+        .subscribe();
+
+      // Subscribe to appointment status updates
+      const appointmentSubscription = supabase
+        .channel(`appointments_${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'appointments',
+            filter: `patient_id=eq.${user.id}`
+          },
+          (payload) => {
+            const updatedAppointment = payload.new as any;
+            setAiProcessingStatus(prev => ({
+              ...prev,
+              [updatedAppointment.consultation_id]: updatedAppointment.ai_processing_status || 'pending'
+            }));
           }
         )
         .subscribe();
@@ -393,6 +498,36 @@ const PatientConsultationsPage: React.FC = () => {
     });
     
     return { dateDisplay, timeDisplay };
+  };
+
+  // Helper function to get urgency level color
+  const getUrgencyColor = (urgency: string) => {
+    switch (urgency) {
+      case 'emergency':
+        return 'bg-red-100 text-red-700 border-red-200';
+      case 'urgent':
+        return 'bg-orange-100 text-orange-700 border-orange-200';
+      case 'routine':
+        return 'bg-green-100 text-green-700 border-green-200';
+      default:
+        return 'bg-gray-100 text-gray-700 border-gray-200';
+    }
+  };
+
+  // Helper function to get AI processing status display
+  const getAiProcessingStatusDisplay = (status: string) => {
+    switch (status) {
+      case 'pending':
+        return { text: 'AI Analysis Pending', icon: Clock, color: 'text-gray-500' };
+      case 'triggered':
+        return { text: 'AI Analysis in Progress', icon: Loader, color: 'text-blue-500 animate-spin' };
+      case 'completed':
+        return { text: 'AI Analysis Complete', icon: CheckCircle, color: 'text-green-500' };
+      case 'failed':
+        return { text: 'AI Analysis Failed', icon: AlertTriangle, color: 'text-red-500' };
+      default:
+        return { text: 'Processing Status Unknown', icon: AlertCircle, color: 'text-gray-500' };
+    }
   };
 
   return (
@@ -693,8 +828,121 @@ const PatientConsultationsPage: React.FC = () => {
                         </div>
                       )}
 
+                      {/* AI Clinical Summary */}
+                      {(() => {
+                        const clinicalSummary = clinicalSummaries[consultation.id];
+                        const processingStatus = aiProcessingStatus[consultation.id];
+                        const statusDisplay = getAiProcessingStatusDisplay(processingStatus);
+                        const StatusIcon = statusDisplay.icon;
+
+                        return (
+                          <div>
+                            <h4 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                              <Sparkles className="h-5 w-5 mr-2 text-purple-600" />
+                              AI Clinical Summary
+                            </h4>
+                            
+                            {/* Processing Status */}
+                            <div className="mb-4 p-4 bg-gradient-to-r from-purple-50 to-blue-50 rounded-xl border border-purple-200">
+                              <div className="flex items-center space-x-3">
+                                <StatusIcon className={`h-5 w-5 ${statusDisplay.color}`} />
+                                <span className="font-medium text-gray-800">{statusDisplay.text}</span>
+                              </div>
+                              {processingStatus === 'failed' && clinicalSummary?.error_message && (
+                                <p className="text-sm text-red-600 mt-2">
+                                  Error: {clinicalSummary.error_message}
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Clinical Summary Content */}
+                            {clinicalSummary && clinicalSummary.summary_json && (
+                              <div className="space-y-4">
+                                {/* Chief Complaint */}
+                                <div className="bg-gradient-to-r from-red-50 to-orange-50 rounded-xl p-4 border border-red-200">
+                                  <h5 className="font-semibold text-gray-800 mb-2 flex items-center">
+                                    <AlertCircle className="h-4 w-4 mr-2 text-red-600" />
+                                    Chief Complaint
+                                  </h5>
+                                  <p className="text-gray-700">{clinicalSummary.summary_json.chief_complaint}</p>
+                                </div>
+
+                                {/* History of Present Illness */}
+                                <div className="bg-gradient-to-r from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-200">
+                                  <h5 className="font-semibold text-gray-800 mb-2 flex items-center">
+                                    <Activity className="h-4 w-4 mr-2 text-blue-600" />
+                                    History of Present Illness
+                                  </h5>
+                                  <p className="text-gray-700">{clinicalSummary.summary_json.history_of_present_illness}</p>
+                                </div>
+
+                                {/* Differential Diagnoses */}
+                                {clinicalSummary.summary_json.differential_diagnoses.length > 0 && (
+                                  <div className="bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl p-4 border border-yellow-200">
+                                    <h5 className="font-semibold text-gray-800 mb-2 flex items-center">
+                                      <Brain className="h-4 w-4 mr-2 text-yellow-600" />
+                                      Differential Diagnoses
+                                    </h5>
+                                    <ul className="space-y-1">
+                                      {clinicalSummary.summary_json.differential_diagnoses.map((diagnosis: string, index: number) => (
+                                        <li key={index} className="flex items-start space-x-2">
+                                          <span className="text-yellow-600 font-medium text-sm">•</span>
+                                          <span className="text-gray-700 text-sm">{diagnosis}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Recommended Tests */}
+                                {clinicalSummary.summary_json.recommended_tests.length > 0 && (
+                                  <div className="bg-gradient-to-r from-green-50 to-teal-50 rounded-xl p-4 border border-green-200">
+                                    <h5 className="font-semibold text-gray-800 mb-2 flex items-center">
+                                      <Pill className="h-4 w-4 mr-2 text-green-600" />
+                                      Recommended Tests
+                                    </h5>
+                                    <ul className="space-y-1">
+                                      {clinicalSummary.summary_json.recommended_tests.map((test: string, index: number) => (
+                                        <li key={index} className="flex items-start space-x-2">
+                                          <span className="text-green-600 font-medium text-sm">•</span>
+                                          <span className="text-gray-700 text-sm">{test}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Urgency Level */}
+                                <div className={`rounded-xl p-4 border ${getUrgencyColor(clinicalSummary.summary_json.urgency_level)}`}>
+                                  <h5 className="font-semibold mb-2 flex items-center">
+                                    <AlertTriangle className="h-4 w-4 mr-2" />
+                                    Urgency Level
+                                  </h5>
+                                  <p className="text-sm font-medium capitalize">
+                                    {clinicalSummary.summary_json.urgency_level}
+                                  </p>
+                                </div>
+
+                                {/* AI Model Info */}
+                                <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600">
+                                  <p>Generated by {clinicalSummary.model_version} • {new Date(clinicalSummary.created_at).toLocaleString()}</p>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* No Summary Available */}
+                            {!clinicalSummary && processingStatus === 'completed' && (
+                              <div className="text-center py-6 bg-gray-50 rounded-xl">
+                                <Sparkles className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                                <p className="text-gray-500">AI analysis completed but no summary available.</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                       {/* No Data Message */}
-                      {Object.keys(filledData).length === 0 && files.length === 0 && (
+                      {Object.keys(filledData).length === 0 && files.length === 0 && !clinicalSummaries[consultation.id] && (
                         <div className="text-center py-8">
                           <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                           <p className="text-gray-500">No information or files available for this appointment.</p>
